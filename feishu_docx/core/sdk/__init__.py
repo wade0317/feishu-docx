@@ -5,6 +5,7 @@
 # @Date   ：2026/01/29 15:24
 # @Author ：leemysw
 # 2026/02/01 18:45   Refactor - 组合模式重构
+# 2026/02/04 10:15   Add document domain setter for media fallback
 # =====================================================
 """
 [INPUT]: 依赖各子模块
@@ -85,6 +86,10 @@ class FeishuSDK:
     @property
     def client(self):
         return self._core.client
+
+    def set_document_domain(self, domain: Optional[str]) -> None:
+        """设置当前文档域名（用于图片降级下载）"""
+        self._core.document_domain = domain
 
     # =========================================================================
     # 子模块（延迟初始化）

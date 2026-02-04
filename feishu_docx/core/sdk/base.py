@@ -6,6 +6,7 @@
 # @Author ：leemysw
 # 2026/01/29 15:10   Create - SDK 基础类
 # 2026/02/01 18:30   Refactor - 组合模式重构
+# 2026/02/04 10:15   Add document domain storage for media fallback
 # =====================================================
 """
 [INPUT]: 依赖 lark_oapi
@@ -54,6 +55,7 @@ class SDKCore:
         self.temp_dir = temp_dir or Path(tempfile.gettempdir()) / "feishu_docx"
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.token_type = token_type
+        self.document_domain: Optional[str] = None
 
     def build_option(self, access_token: str) -> lark.RequestOption:
         """构建请求选项（根据 token_type 自动选择）"""

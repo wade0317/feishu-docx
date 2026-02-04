@@ -277,15 +277,21 @@ class DocumentParser:
         if bt == BlockType.IMAGE:
             if not block.image or not block.image.token:
                 return ""
-            file_path = self.sdk.media.get_image(block.image.token, access_token=self.user_access_token)
-            if file_path:
+            file_path_or_url = self.sdk.media.get_image(block.image.token, access_token=self.user_access_token)
+            if file_path_or_url:
+                if file_path_or_url.startswith(("http://", "https://")):
+                    return f"![image]({file_path_or_url})"
                 # 使用相对路径：资源目录名/文件名
                 if self.assets_dir:
-                    rel_path = f"{self.assets_dir.name}/{Path(file_path).name}"
+                    rel_path = f"{self.assets_dir.name}/{Path(file_path_or_url).name}"
                     return f"![image]({rel_path})"
-                return f"![image]({file_path})"
+                return f"![image]({file_path_or_url})"
             else:
-                return f"![图片下载失败]({block.image.token})"
+                # 降级方案：使用临时下载 URL（适用于只读权限）
+                download_url = self.sdk.media.get_file_download_url(block.image.token, self.user_access_token)
+                if download_url:
+                    return f"![image]({download_url})"
+                return f"![图片下载失败（无权限）]({block.image.token})"
 
         if bt == BlockType.BOARD:
             if not block.board or not block.board.token:
@@ -303,7 +309,8 @@ class DocumentParser:
                     export_metadata=True,
                 )
                 if not board_data:
-                    return ""
+                    # 降级：无法导出时返回友好提示
+                    return f"<!-- 画板 {whiteboard_id} 需要相应权限才能导出 -->"
 
                 # 生成 Markdown
                 content_parts = []
@@ -333,7 +340,8 @@ class DocumentParser:
                         rel_path = f"{self.assets_dir.name}/{Path(file_path).name}"
                         return f"![whiteboard]({rel_path})"
                     return f"![whiteboard]({file_path})"
-                return ""
+                # 降级：无法下载时返回占位符（画板没有临时URL方案）
+                return f"<!-- 画板 {whiteboard_id} 需要相应权限才能下载 -->"
 
         # 电子表格
         if bt == BlockType.SHEET:

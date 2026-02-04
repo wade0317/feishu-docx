@@ -5,6 +5,7 @@
 # @Date   ：2026/01/29 15:15
 # @Author ：leemysw
 # 2026/02/01 18:40   Refactor - 组合模式重构
+# 2026/02/04 10:15   Add domain-based download fallback
 # =====================================================
 """
 [INPUT]: 依赖 base.py, lark_oapi
@@ -91,23 +92,80 @@ class MediaAPI(SubModule):
         raise RuntimeError(f"上传图片失败 ({p.name})")
 
     def get_image(self, file_token: str, access_token: str) -> Optional[str]:
-        """下载云文档中的图片"""
+        """下载云文档中的图片或返回可下载 URL
+
+        策略：
+        1. 首先尝试直接下载（适用于有权限的文档）
+        2. 如果失败（403/401等权限错误或空响应），使用临时下载 URL（适用于只读文档）
+        3. 如果临时 URL 失败，返回拼接的下载 URL（不再下载）
+        """
+        import httpx
+
+        # 策略1: 尝试直接下载
         request = DownloadMediaRequest.builder().file_token(file_token).build()
         option = self._build_option(access_token)
         response: DownloadMediaResponse = self.client.drive.v1.media.download(request, option)
 
-        if not response.success():
-            self._log_error("drive.v1.media.download", response)
-            return None
-
         extension = ".png"
-        if hasattr(response, "file_name") and response.file_name:
-            if "." in response.file_name:
-                extension = f".{response.file_name.split('.')[-1]}"
+        if response.success():
+            if hasattr(response, "file_name") and response.file_name:
+                if "." in response.file_name:
+                    extension = f".{response.file_name.split('.')[-1]}"
 
-        file_path = self.temp_dir / f"{file_token}{extension}"
-        file_path.write_bytes(response.file.read())
-        return str(file_path)
+            file_path = self.temp_dir / f"{file_token}{extension}"
+            file_path.write_bytes(response.file.read())
+            return str(file_path)
+
+        # 策略2: 直接下载失败，尝试使用临时下载 URL
+        # 检查是否为权限错误或空响应
+        error_code = response.code if hasattr(response, "code") else None
+        permission_errors = {403, 401, 99991663, 99991400}  # 飞书常见权限错误码
+
+        # 检测需要降级的情况：
+        # 1. 权限错误码
+        # 2. 空响应（code=None, msg=None, response=b''）
+        should_fallback = (
+            error_code in permission_errors or
+            (error_code is None and
+             (not hasattr(response, "msg") or response.msg is None) and
+             (not hasattr(response, "raw") or not response.raw or response.raw.content == b''))
+        )
+
+        if should_fallback:
+            console.print(f"[yellow]直接下载失败 (code: {error_code})，尝试使用临时下载 URL...[/yellow]")
+
+            tmp_url = self.get_file_download_url(file_token, access_token)
+            if tmp_url:
+                try:
+                    # 使用临时 URL 下载
+                    tmp_response = httpx.get(tmp_url, timeout=30.0)
+                    if tmp_response.status_code == 200:
+                        file_path = self.temp_dir / f"{file_token}{extension}"
+                        file_path.write_bytes(tmp_response.content)
+                        console.print(f"[green]✓ 使用临时 URL 下载成功[/green]")
+                        return str(file_path)
+                    else:
+                        console.print(f"[red]临时 URL 下载失败 (HTTP {tmp_response.status_code})[/red]")
+                except Exception as e:
+                    console.print(f"[red]临时 URL 下载异常: {e}[/red]")
+            else:
+                console.print(f"[red]获取临时下载 URL 失败[/red]")
+
+            # 策略3: 临时 URL 获取/下载失败，返回拼接域名下载 URL
+            document_domain = getattr(self._core, "document_domain", None)
+            if document_domain:
+                direct_url = (
+                    f"https://internal-api-drive-stream.{document_domain}.com/"
+                    f"space/api/box/stream/download/v2/cover/{file_token}"
+                )
+                console.print("[yellow]使用拼接 URL 作为最终降级（不再下载）[/yellow]")
+                return direct_url
+            else:
+                console.print("[red]未设置文档域名，无法拼接下载 URL[/red]")
+
+        # 记录最终失败
+        self._log_error("drive.v1.media.download", response)
+        return None
 
     def get_whiteboard(self, whiteboard_id: str, access_token: str) -> Optional[str]:
         """导出画板为图片"""
