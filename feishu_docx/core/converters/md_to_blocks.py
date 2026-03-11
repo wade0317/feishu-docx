@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 # =====================================================
 # @File   ：md_to_blocks.py
-# @Date   ：2026/01/28 12:40
+# @Date   ：2026/03/11 11:20
 # @Author ：leemysw
 # 2026/01/18 15:40   Create
 # 2026/01/28 10:20   Add image/table/math support
 # 2026/01/28 12:20   Fix equation block schema and Å mapping
 # 2026/01/28 12:30   Fix \\text{..._...} subscript rendering
 # 2026/01/28 12:40   Fix mistune table parsing and cell content
+# 2026/03/11 11:20   Fix front matter and nested list conversion
 # =====================================================
 """
 Markdown → 飞书 Block 转换器
@@ -60,6 +61,10 @@ class MarkdownToBlocks:
 
     # 代码语言映射
     LANGUAGE_MAP = CODE_STYLE_MAP_REVERSE
+    FRONT_MATTER_PATTERN = re.compile(
+        r"^(?:\ufeff)?---\s*\n.*?\n---\s*(?:\n|$)",
+        re.DOTALL,
+    )
 
     def __init__(self):
         """初始化转换器"""
@@ -80,9 +85,7 @@ class MarkdownToBlocks:
             (Blocks 列表, 图片路径列表)
         """
         self.image_paths = []
-        tokens = self._md.parse(markdown_text)
-        if isinstance(tokens, tuple):
-            tokens = tokens[0]
+        tokens = self._parse_tokens(markdown_text)
 
         blocks = []
         for token in tokens:
@@ -112,11 +115,29 @@ class MarkdownToBlocks:
                     self.BLOCK_TYPE_TODO,
                 ]:
                     payload_key = next((k for k in b.keys() if k != "block_type"), None)
-                    if payload_key and not b[payload_key].get("elements"):
+                    has_children = bool(b.get("children"))
+                    if payload_key and not b[payload_key].get("elements") and not has_children:
                         continue
                 blocks.append(b)
 
         return blocks, self.image_paths
+
+    def preprocess_markdown(self, markdown_text: str) -> str:
+        """预处理 Markdown，移除 front matter。"""
+        if not markdown_text:
+            return ""
+
+        processed = self.FRONT_MATTER_PATTERN.sub("", markdown_text, count=1)
+        return processed.lstrip("\n")
+
+    def has_front_matter(self, markdown_text: str) -> bool:
+        """判断 Markdown 是否包含 YAML front matter。"""
+        return bool(self.FRONT_MATTER_PATTERN.match(markdown_text or ""))
+
+    def has_nested_list(self, markdown_text: str) -> bool:
+        """判断 Markdown 是否包含嵌套列表。"""
+        tokens = self._parse_tokens(markdown_text)
+        return self._contains_nested_list(tokens)
 
     def convert_file(self, file_path: str) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
@@ -130,6 +151,30 @@ class MarkdownToBlocks:
         """
         with open(file_path, "r", encoding="utf-8") as f:
             return self.convert(f.read())
+
+    def _parse_tokens(self, markdown_text: str) -> List[Dict[str, Any]]:
+        """解析 Markdown 为 tokens。"""
+        processed = self.preprocess_markdown(markdown_text)
+        tokens = self._md.parse(processed)
+        if isinstance(tokens, tuple):
+            tokens = tokens[0]
+        return tokens
+
+    def _contains_nested_list(self, tokens: List[Dict[str, Any]], list_depth: int = 0) -> bool:
+        """递归判断 token 中是否存在嵌套列表。"""
+        for token in tokens:
+            token_type = token.get("type")
+            next_depth = list_depth
+            if token_type == "list":
+                if list_depth >= 1:
+                    return True
+                next_depth += 1
+
+            children = token.get("children") or []
+            if isinstance(children, list) and self._contains_nested_list(children, next_depth):
+                return True
+
+        return False
 
     @staticmethod
     def _is_remote_url(url: str) -> bool:
@@ -234,7 +279,7 @@ class MarkdownToBlocks:
         }
 
     def _make_list(self, token: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """创建列表 Block（每个列表项一个 Block）"""
+        """创建列表 Block，递归保留嵌套层级。"""
         ordered = token.get("attrs", {}).get("ordered", False)
         block_type = self.BLOCK_TYPE_ORDERED if ordered else self.BLOCK_TYPE_BULLET
         list_key = "ordered" if ordered else "bullet"
@@ -243,24 +288,27 @@ class MarkdownToBlocks:
         for item in token.get("children", []):
             if item.get("type") == "list_item":
                 elements = []
-                image_blocks: List[Dict[str, Any]] = []
+                child_blocks: List[Dict[str, Any]] = []
                 for child in item.get("children", []):
                     if child.get("type") in ["paragraph", "block_text"]:
                         for sub in child.get("children", []):
                             if sub.get("type") == "image":
                                 img_block = self._make_image(sub)
                                 if img_block:
-                                    image_blocks.append(img_block)
+                                    child_blocks.append(img_block)
                             else:
                                 elements.extend(self._extract_text_elements([sub]))
+                    elif child.get("type") == "list":
+                        child_blocks.extend(self._make_list(child))
 
-                if elements:
-                    blocks.append({
+                if elements or child_blocks:
+                    block = {
                         "block_type": block_type,
                         list_key: {"elements": elements},
-                    })
-                if image_blocks:
-                    blocks.extend(image_blocks)
+                    }
+                    if child_blocks:
+                        block["children"] = child_blocks
+                    blocks.append(block)
 
         return blocks
 

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- 修复 Markdown 嵌套列表写入飞书时 `children` 结构不兼容的问题，改为递归创建子块
+- 修复包含 YAML front matter 的 Markdown 文件写入异常，写入前会先清理 front matter
+- 修复 Markdown 表格本地创建流程，按飞书限制自动拆分超过 9 行的表格并逐个回填单元格内容
+- 修复 Block 创建请求体清洗逻辑，使用飞书 SDK `Block` 模型构造请求并移除不允许的响应字段
+
 ## [0.2.1] - 2026-03-02
 
 ### Added

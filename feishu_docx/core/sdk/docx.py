@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 # =====================================================
 # @File   ：docx.py
-# @Date   ：2026/01/29 15:12
+# @Date   ：2026/03/11 11:20
 # @Author ：leemysw
 # 2026/02/01 18:35   Refactor - 组合模式重构
+# 2026/03/11 11:20   Normalize create block payload with SDK Block
 # =====================================================
 """
 [INPUT]: 依赖 base.py, lark_oapi
@@ -13,6 +14,7 @@
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 """
 
+import copy
 import json
 from typing import List, Optional
 
@@ -26,6 +28,26 @@ console = get_console()
 
 class DocxAPI(SubModule):
     """云文档 API"""
+
+    @staticmethod
+    def _normalize_block_for_create(block: dict) -> Block:
+        """将 dict 形式的块清洗为创建接口可接受的 SDK Block 对象。"""
+        block_data = copy.deepcopy(block)
+        for key in ["block_id", "parent_id", "children", "comment_ids"]:
+            block_data.pop(key, None)
+        if isinstance(block_data.get("table"), dict):
+            block_data["table"].pop("cells", None)
+        return Block(block_data)
+
+    def _normalize_create_children(self, children: List[dict]) -> List[Block]:
+        """统一转换创建请求中的 children。"""
+        normalized_children: List[Block] = []
+        for child in children:
+            if isinstance(child, Block):
+                normalized_children.append(child)
+            else:
+                normalized_children.append(self._normalize_block_for_create(child))
+        return normalized_children
 
     def get_document_info(self, document_id: str, access_token: str) -> dict:
         """获取云文档基本信息"""
@@ -159,9 +181,10 @@ class DocxAPI(SubModule):
         all_created_children = []
         chunk_size = 50
         current_index = index
+        normalized_children = self._normalize_create_children(children)
 
-        for i in range(0, len(children), chunk_size):
-            chunk = children[i: i + chunk_size]
+        for i in range(0, len(normalized_children), chunk_size):
+            chunk = normalized_children[i: i + chunk_size]
             body_builder = CreateDocumentBlockChildrenRequestBody.builder().children(chunk)
             if current_index >= 0:
                 body_builder = body_builder.index(current_index)

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # =====================================================
 # @File   ：writer.py
-# @Date   ：2026/01/28 13:25
+# @Date   ：2026/03/11 11:20
 # @Author ：leemysw
 # 2026/01/18 17:55   Create
 # 2026/01/28 10:20   Add image refill pipeline
@@ -10,6 +10,7 @@
 # 2026/01/28 12:45   Use local converter for tables
 # 2026/01/28 13:10   Fill table cells after creation
 # 2026/01/28 13:25   Fetch table cell blocks on demand
+# 2026/03/11 11:20   Fix nested list recursion and table chunk creation
 # =====================================================
 """
 飞书文档写入器
@@ -20,6 +21,7 @@
 [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 """
 
+import copy
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -104,11 +106,14 @@ class FeishuWriter:
     def _prepare_table_blocks(
             self, blocks: List[Dict[str, Any]]
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        normalized_blocks: List[Dict[str, Any]] = []
         table_plans: List[Dict[str, Any]] = []
         for block in blocks:
             if not isinstance(block, dict):
+                normalized_blocks.append(block)
                 continue
             if block.get("block_type") != self.converter.BLOCK_TYPE_TABLE:
+                normalized_blocks.append(block)
                 continue
 
             cell_blocks = block.get("children") or []
@@ -140,14 +145,34 @@ class FeishuWriter:
                 cell_blocks = cell_blocks[:expected_cells]
                 cell_contents = cell_contents[:expected_cells]
 
-            block.pop("children", None)
-            table_plans.append(
-                {
-                    "cell_contents": cell_contents,
-                }
-            )
+            if not isinstance(row_size, int) or not isinstance(column_size, int) or column_size <= 0:
+                normalized_blocks.append(block)
+                continue
 
-        return blocks, table_plans
+            # 飞书单次创建 Table Block 最多支持 9 行，这里按 9 行拆分。
+            max_rows_per_table = 9
+            for row_start in range(0, row_size, max_rows_per_table):
+                chunk_rows = min(max_rows_per_table, row_size - row_start)
+                start_idx = row_start * column_size
+                end_idx = start_idx + chunk_rows * column_size
+
+                table_block = copy.deepcopy(block)
+                table_block.pop("children", None)
+                table_block["table"] = {
+                    "property": {
+                        **table_prop,
+                        "row_size": chunk_rows,
+                        "column_size": column_size,
+                    }
+                }
+                normalized_blocks.append(table_block)
+                table_plans.append(
+                    {
+                        "cell_contents": cell_contents[start_idx:end_idx],
+                    }
+                )
+
+        return normalized_blocks, table_plans
 
     def _table_cell_ids(self, table_block: Any) -> List[str]:
         if isinstance(table_block, dict):
@@ -199,6 +224,48 @@ class FeishuWriter:
                 access_token=user_access_token,
             )
             time.sleep(0.35)
+
+    def _create_blocks_recursive(
+            self,
+            document_id: str,
+            parent_block_id: str,
+            blocks: List[Dict[str, Any]],
+            user_access_token: str,
+    ) -> List[Dict[str, Any]]:
+        """递归创建块，避免将嵌套 children 直接放入单次创建请求。"""
+        request_blocks: List[Dict[str, Any]] = []
+        child_plans: List[List[Dict[str, Any]]] = []
+
+        for block in blocks:
+            block_copy = dict(block)
+            nested_children = [
+                child for child in (block_copy.pop("children", []) or [])
+                if isinstance(child, dict)
+            ]
+            request_blocks.append(block_copy)
+            child_plans.append(nested_children)
+
+        created_blocks = self.sdk.docx.create_blocks(
+            document_id=document_id,
+            block_id=parent_block_id,
+            children=request_blocks,
+            access_token=user_access_token,
+        )
+
+        for created_block, nested_children in zip(created_blocks, child_plans):
+            if not nested_children:
+                continue
+            created_block_id = self._block_id(created_block)
+            if not created_block_id:
+                continue
+            self._create_blocks_recursive(
+                document_id=document_id,
+                parent_block_id=created_block_id,
+                blocks=nested_children,
+                user_access_token=user_access_token,
+            )
+
+        return created_blocks
 
     def create_document(
             self,
@@ -266,35 +333,43 @@ class FeishuWriter:
         # 读取内容
         if file_path:
             with open(file_path, "r", encoding="utf-8") as f:
-                md_content = f.read()
+                raw_md_content = f.read()
             base_dir = Path(file_path).parent
         elif content:
-            md_content = content
+            raw_md_content = content
             base_dir = Path.cwd()
         else:
             raise ValueError("必须提供 content 或 file_path")
 
+        md_content = self.converter.preprocess_markdown(raw_md_content)
+
         # 转换为 Block
         blocks: List[Dict[str, Any]] = []
         image_paths: List[str] = []
+        use_local_blocks = False
 
         if use_native_api:
             local_blocks, local_images = self.converter.convert(md_content)
+            has_nested_lists = self.converter.has_nested_list(md_content)
             has_tables = any(
                 isinstance(b, dict) and b.get("block_type") == self.converter.BLOCK_TYPE_TABLE
                 for b in local_blocks
             )
-            if local_images or has_tables:
+            if local_images or has_nested_lists or has_tables:
                 blocks, image_paths = local_blocks, local_images
+                use_local_blocks = True
             else:
                 blocks = self.sdk.docx.convert_markdown(md_content, user_access_token)
         else:
             blocks, image_paths = self.converter.convert(md_content)
+            use_local_blocks = True
 
         if not blocks:
             return []
 
-        blocks, table_plans = self._prepare_table_blocks(blocks)
+        table_plans: List[Dict[str, Any]] = []
+        if use_local_blocks:
+            blocks, table_plans = self._prepare_table_blocks(blocks)
 
         console.print(f"[yellow]>[/yellow] 已转换 {len(blocks)} 个 Blocks，正在写入飞书...")
 
@@ -305,46 +380,47 @@ class FeishuWriter:
             except Exception as clear_err:
                 console.print(f"[yellow]![/yellow] 清空文档失败，继续写入: {clear_err}")
 
-        created_blocks = self.sdk.docx.create_blocks(
+        created_blocks = self._create_blocks_recursive(
             document_id=document_id,
-            block_id=document_id,
-            children=blocks,
-            access_token=user_access_token,
+            parent_block_id=document_id,
+            blocks=blocks,
+            user_access_token=user_access_token,
         )
 
-        created_table_blocks = [
-            b for b in created_blocks
-            if isinstance(b, dict) and b.get("block_type") == self.converter.BLOCK_TYPE_TABLE
-        ]
-        if len(created_table_blocks) != len(table_plans):
-            console.print(
-                f"[yellow]![/yellow] 表格块数量不匹配，创建 {len(created_table_blocks)}，计划 {len(table_plans)}"
-            )
+        if use_local_blocks and table_plans:
+            created_table_blocks = [
+                b for b in created_blocks
+                if isinstance(b, dict) and b.get("block_type") == self.converter.BLOCK_TYPE_TABLE
+            ]
+            if len(created_table_blocks) != len(table_plans):
+                console.print(
+                    f"[yellow]![/yellow] 表格块数量不匹配，创建 {len(created_table_blocks)}，计划 {len(table_plans)}"
+                )
 
-        resolved_table_blocks: Dict[str, Any] = {}
-        if created_table_blocks:
-            try:
-                all_blocks = self.sdk.docx.get_block_list(document_id, user_access_token)
-                resolved_table_blocks = {
-                    self._block_id(b): b
-                    for b in all_blocks
-                    if self._block_type(b) == self.converter.BLOCK_TYPE_TABLE
-                }
-            except Exception as e:
-                console.print(f"[yellow]![/yellow] 获取表格块信息失败: {e}")
+            resolved_table_blocks: Dict[str, Any] = {}
+            if created_table_blocks:
+                try:
+                    all_blocks = self.sdk.docx.get_block_list(document_id, user_access_token)
+                    resolved_table_blocks = {
+                        self._block_id(b): b
+                        for b in all_blocks
+                        if self._block_type(b) == self.converter.BLOCK_TYPE_TABLE
+                    }
+                except Exception as e:
+                    console.print(f"[yellow]![/yellow] 获取表格块信息失败: {e}")
 
-        for table_block, plan in zip(created_table_blocks, table_plans):
-            cell_contents = plan.get("cell_contents") or []
-            if not cell_contents:
-                continue
-            table_block_id = self._block_id(table_block)
-            resolved_block = resolved_table_blocks.get(table_block_id) if table_block_id else None
-            self._fill_table_cells(
-                document_id=document_id,
-                created_table_block=resolved_block or table_block,
-                cell_contents=cell_contents,
-                user_access_token=user_access_token,
-            )
+            for table_block, plan in zip(created_table_blocks, table_plans):
+                cell_contents = plan.get("cell_contents") or []
+                if not cell_contents:
+                    continue
+                table_block_id = self._block_id(table_block)
+                resolved_block = resolved_table_blocks.get(table_block_id) if table_block_id else None
+                self._fill_table_cells(
+                    document_id=document_id,
+                    created_table_block=resolved_block or table_block,
+                    cell_contents=cell_contents,
+                    user_access_token=user_access_token,
+                )
 
         if image_paths:
             console.print(f"> 正在为 [blue]{len(image_paths)}[/blue] 个图片 Block 回填内容...")

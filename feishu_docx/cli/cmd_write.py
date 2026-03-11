@@ -112,7 +112,8 @@ def create(
             if not final_app_id or not final_app_secret:
                 console.print("[red]❌ 需要提供凭证，请运行 feishu-docx config set[/red]")
                 raise typer.Exit(1)
-            exporter = FeishuExporter(app_id=final_app_id, app_secret=final_app_secret, is_lark=lark, auth_mode=final_auth_mode)
+            exporter = FeishuExporter(app_id=final_app_id, app_secret=final_app_secret, is_lark=lark,
+                                      auth_mode=final_auth_mode)
             access_token = exporter.get_access_token()
 
         writer = FeishuWriter(sdk=exporter.sdk)
@@ -224,13 +225,15 @@ def write(
             if not final_app_id or not final_app_secret:
                 console.print("[red]❌ 需要提供凭证[/red]")
                 raise typer.Exit(1)
-            exporter = FeishuExporter(app_id=final_app_id, app_secret=final_app_secret, is_lark=lark, auth_mode=final_auth_mode)
+            exporter = FeishuExporter(app_id=final_app_id, app_secret=final_app_secret, is_lark=lark,
+                                      auth_mode=final_auth_mode)
             access_token = exporter.get_access_token()
 
         # 解析 URL 获取 document_id
         doc_info = exporter.parse_url(url)
-        if doc_info.node_type != "docx":
-            console.print(f"[red]❌ 只支持 docx 类型文档，当前类型: {doc_info.node_type}[/red]")
+        import pdb; pdb.set_trace()
+        if doc_info.node_type not in ["docx", "wiki"]:
+            console.print(f"[red]❌ 只支持 docx / wiki 类型文档，当前类型: {doc_info.node_type}[/red]")
             raise typer.Exit(1)
 
         writer = FeishuWriter(sdk=exporter.sdk)
@@ -295,7 +298,8 @@ def update(
             if not final_app_id or not final_app_secret:
                 console.print("[red]❌ 需要提供凭证[/red]")
                 raise typer.Exit(1)
-            exporter = FeishuExporter(app_id=final_app_id, app_secret=final_app_secret, is_lark=lark, auth_mode=final_auth_mode)
+            exporter = FeishuExporter(app_id=final_app_id, app_secret=final_app_secret, is_lark=lark,
+                                      auth_mode=final_auth_mode)
             access_token = exporter.get_access_token()
 
         # 解析 URL 获取 document_id
