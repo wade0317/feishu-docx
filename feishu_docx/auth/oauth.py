@@ -6,6 +6,7 @@
 # @Author ：leemysw
 # 2025/01/09 18:30   Create
 # 2026/01/28 11:25   Add upload scopes
+# 2026/03/19 20:10   Add whiteboard node create scope for Mermaid import
 # 2026/01/28 12:05   Use safe console output
 # =====================================================
 """
@@ -150,6 +151,7 @@ DEFAULT_SCOPES = [
     "sheets:spreadsheet:readonly",  # 查看电子表格
     "bitable:app:readonly",  # 查看多维表格
     "board:whiteboard:node:read",  # 查看白板
+    "board:whiteboard:node:create",  # 创建白板节点（Mermaid/PlantUML 导入）
     "contact:contact.base:readonly",  # 获取用户基本信息（@用户名称）
     "offline_access",  # 离线访问（获取 refresh_token）
 ]

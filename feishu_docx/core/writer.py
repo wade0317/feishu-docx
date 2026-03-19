@@ -11,6 +11,7 @@
 # 2026/01/28 13:10   Fill table cells after creation
 # 2026/01/28 13:25   Fetch table cell blocks on demand
 # 2026/03/11 11:20   Fix nested list recursion and table chunk creation
+# 2026/03/19 19:35   Add Mermaid-to-whiteboard write pipeline
 # =====================================================
 """
 飞书文档写入器
@@ -182,6 +183,23 @@ class FeishuWriter:
             return (table_block.get("table") or {}).get("cells") or []
         return []
 
+    @staticmethod
+    def _whiteboard_token(block: Any) -> Optional[str]:
+        if isinstance(block, dict):
+            board = block.get("board") or {}
+            if isinstance(board, dict):
+                return board.get("token") or board.get("whiteboard_id") or board.get("id")
+            return None
+
+        board = getattr(block, "board", None)
+        if not board:
+            return None
+        return (
+            getattr(board, "token", None)
+            or getattr(board, "whiteboard_id", None)
+            or getattr(board, "id", None)
+        )
+
     def _fill_table_cells(
             self,
             document_id: str,
@@ -222,8 +240,33 @@ class FeishuWriter:
                 block_id=cell_id,
                 children=content_blocks,
                 access_token=user_access_token,
-            )
+                )
             time.sleep(0.35)
+
+    def _replace_mermaid_board_with_code_block(
+            self,
+            document_id: str,
+            parent_block_id: str,
+            created_block: Dict[str, Any],
+            mermaid_plan: Dict[str, Any],
+            user_access_token: str,
+            insert_index: int,
+    ) -> None:
+        block_id = self._block_id(created_block)
+        if block_id:
+            self.sdk.docx.delete_block(document_id, block_id, user_access_token)
+
+        fallback_block = self.converter._make_plain_code_block(  # noqa: SLF001
+            mermaid_plan.get("code", ""),
+            "mermaid",
+        )
+        self.sdk.docx.create_blocks(
+            document_id=document_id,
+            block_id=parent_block_id,
+            children=[fallback_block],
+            access_token=user_access_token,
+            index=insert_index,
+        )
 
     def _create_blocks_recursive(
             self,
@@ -235,6 +278,7 @@ class FeishuWriter:
         """递归创建块，避免将嵌套 children 直接放入单次创建请求。"""
         request_blocks: List[Dict[str, Any]] = []
         child_plans: List[List[Dict[str, Any]]] = []
+        mermaid_plans: List[Optional[Dict[str, Any]]] = []
 
         for block in blocks:
             block_copy = dict(block)
@@ -242,8 +286,10 @@ class FeishuWriter:
                 child for child in (block_copy.pop("children", []) or [])
                 if isinstance(child, dict)
             ]
+            mermaid_plan = block_copy.pop("_feishu_docx_mermaid", None)
             request_blocks.append(block_copy)
             child_plans.append(nested_children)
+            mermaid_plans.append(mermaid_plan)
 
         created_blocks = self.sdk.docx.create_blocks(
             document_id=document_id,
@@ -252,7 +298,39 @@ class FeishuWriter:
             access_token=user_access_token,
         )
 
-        for created_block, nested_children in zip(created_blocks, child_plans):
+        for sibling_index, (created_block, nested_children, mermaid_plan) in enumerate(
+                zip(created_blocks, child_plans, mermaid_plans)
+        ):
+            if mermaid_plan:
+                whiteboard_id = self._whiteboard_token(created_block)
+                if not whiteboard_id:
+                    raise RuntimeError("Mermaid 画板创建成功，但未返回 whiteboard token")
+                try:
+                    self.sdk.media.create_whiteboard_plantuml_node(
+                        whiteboard_id=whiteboard_id,
+                        source_code=mermaid_plan.get("code", ""),
+                        access_token=user_access_token,
+                        syntax_type=mermaid_plan.get("syntax_type", 2),
+                        style_type=mermaid_plan.get("style_type", 1),
+                        diagram_type=mermaid_plan.get("diagram_type", 0),
+                    )
+                except RuntimeError as e:
+                    error_text = str(e)
+                    if "parse Mermaid failed" in error_text or "Lexical error" in error_text:
+                        console.print(
+                            "[yellow]![/yellow] Mermaid 画板解析失败，已回退为普通代码块"
+                        )
+                        self._replace_mermaid_board_with_code_block(
+                            document_id=document_id,
+                            parent_block_id=parent_block_id,
+                            created_block=created_block,
+                            mermaid_plan=mermaid_plan,
+                            user_access_token=user_access_token,
+                            insert_index=sibling_index,
+                        )
+                    else:
+                        raise
+
             if not nested_children:
                 continue
             created_block_id = self._block_id(created_block)
@@ -355,7 +433,11 @@ class FeishuWriter:
                 isinstance(b, dict) and b.get("block_type") == self.converter.BLOCK_TYPE_TABLE
                 for b in local_blocks
             )
-            if local_images or has_nested_lists or has_tables:
+            has_mermaid = any(
+                isinstance(b, dict) and b.get("_feishu_docx_mermaid")
+                for b in local_blocks
+            )
+            if local_images or has_nested_lists or has_tables or has_mermaid:
                 blocks, image_paths = local_blocks, local_images
                 use_local_blocks = True
             else:

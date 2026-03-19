@@ -51,6 +51,9 @@ feishu-docx export "https://my.feishu.cn/wiki/KUIJwaBuGiwaSIkkKJ6cfVY8nSg"
 # Create a Feishu doc directly from a WeChat article
 feishu-docx create --url "https://mp.weixin.qq.com/s/xxxxx"
 
+# Mermaid fenced code blocks are imported as Feishu whiteboards
+feishu-docx create "System Design" -c $'```mermaid\nflowchart TD\nA --> B\n```'
+
 # Manage app cloud-space documents
 feishu-docx drive ls --type docx
 
@@ -121,6 +124,29 @@ This tool currently supports exporting the following Feishu/Lark document compon
 - Create a Feishu doc directly from a WeChat article URL
 - Create, append, or update Feishu document content
 - Manage files and permissions in app cloud space or personal cloud space
+
+### Mermaid Writeback Compatibility
+
+When writing Markdown to Feishu docs, Mermaid fenced code blocks are imported through the whiteboard API only for diagram types that Feishu actually accepts. Unsupported or parser-failing Mermaid blocks are downgraded to normal code blocks instead of failing the whole document sync.
+
+Verified against the document `https://nvj4o5b5sdu.feishu.cn/wiki/RbKnw4BfyiQytrki6I4cKqJVnbg` on March 19, 2026:
+
+| Mermaid type | Result | Notes |
+|---|---|---|
+| `graph` / `flowchart` | ✅ Whiteboard import succeeded | Tested with `graph LR`, `graph TD`, `graph TB` |
+| `sequenceDiagram` | ✅ Whiteboard import succeeded | |
+| `classDiagram` | ✅ Whiteboard import succeeded | |
+| `stateDiagram-v2` | ✅ Whiteboard import succeeded | |
+| `gantt` | ✅ Whiteboard import succeeded | |
+| `pie` | ✅ Whiteboard import succeeded | |
+| `erDiagram` | ✅ Whiteboard import succeeded | |
+| `mindmap` | ✅ Whiteboard import succeeded | |
+| `timeline` | ✅ Whiteboard import succeeded | |
+| `journey` | ❌ Whiteboard import failed | Feishu API reported `type: journey not supported` |
+| `gitgraph` | ❌ Whiteboard import failed | Downgraded to a normal code block |
+| `quadrantChart` | ❌ Whiteboard import failed | Feishu API returned Mermaid lexical parse error |
+
+Types not listed above were not verified in this repository yet. Current implementation prefers successful document sync over strict whiteboard conversion, so unsupported Mermaid blocks fall back to code blocks.
 
 ### CLI
 
@@ -195,6 +221,7 @@ print(f"Exported {result['exported']} docs to {result['space_dir']}")
 "sheets:spreadsheet:readonly"  # 查看电子表格
 "bitable:app:readonly"  # 查看多维表格
 "board:whiteboard:node:read"  # 查看白板
+"board:whiteboard:node:create"  # Create whiteboard nodes (Mermaid import)
 "contact:contact.base:readonly"  # 获取用户基本信息（@用户名称）
 "offline_access"  # 离线访问（获取 refresh_token）
 ```

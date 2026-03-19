@@ -6,6 +6,7 @@
 # @Author ：leemysw
 # 2026/02/01 18:40   Refactor - 组合模式重构
 # 2026/02/04 10:15   Add domain-based download fallback
+# 2026/03/19 19:35   Add whiteboard Mermaid import API
 # =====================================================
 """
 [INPUT]: 依赖 base.py, lark_oapi
@@ -20,6 +21,9 @@ from typing import List, Optional
 
 import lark_oapi as lark
 from lark_oapi.api.board.v1 import (
+    CreatePlantumlWhiteboardNodeRequest,
+    CreatePlantumlWhiteboardNodeRequestBody,
+    CreatePlantumlWhiteboardNodeResponse,
     DownloadAsImageWhiteboardRequest,
     DownloadAsImageWhiteboardResponse,
 )
@@ -34,6 +38,45 @@ console = get_console()
 
 class MediaAPI(SubModule):
     """图片 & 附件 API"""
+
+    def create_whiteboard_plantuml_node(
+            self,
+            whiteboard_id: str,
+            source_code: str,
+            access_token: str,
+            syntax_type: int = 2,
+            style_type: int = 1,
+            diagram_type: int = 0,
+            overwrite: bool = True,
+    ) -> dict:
+        """向画板导入 Mermaid / PlantUML 源码。"""
+        request = (
+            CreatePlantumlWhiteboardNodeRequest.builder()
+            .whiteboard_id(whiteboard_id)
+            .request_body(
+                CreatePlantumlWhiteboardNodeRequestBody.builder()
+                .plant_uml_code(source_code)
+                .syntax_type(syntax_type)
+                .style_type(style_type)
+                .diagram_type(diagram_type)
+                .overwrite(overwrite)
+                .build()
+            )
+            .build()
+        )
+        option = self._build_option(access_token)
+        response: CreatePlantumlWhiteboardNodeResponse = (
+            self.client.board.v1.whiteboard_node.create_plantuml(request, option)
+        )
+
+        if not response.success():
+            self._log_error("board.v1.whiteboard_node.create_plantuml", response)
+            raise RuntimeError(f"导入 Mermaid/PlantUML 到画板失败: {response.msg}")
+
+        return {
+            "node_id": getattr(response.data, "node_id", None) if response.data else None,
+            "extra": getattr(response.data, "extra", None) if response.data else None,
+        }
 
     def upload_image(
             self,

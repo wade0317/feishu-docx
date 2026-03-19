@@ -6,6 +6,8 @@
 # @Author ：leemysw
 # 2026/02/01 18:35   Refactor - 组合模式重构
 # 2026/03/11 11:20   Normalize create block payload with SDK Block
+# 2026/03/19 20:00   Reduce block create batch size to avoid resource limits
+# 2026/03/19 20:05   Retry block creation by splitting batches on resource limit errors
 # =====================================================
 """
 [INPUT]: 依赖 base.py, lark_oapi
@@ -179,15 +181,14 @@ class DocxAPI(SubModule):
             CreateDocumentBlockChildrenResponse,
         )
         all_created_children = []
-        chunk_size = 50
+        chunk_size = 20
         current_index = index
         normalized_children = self._normalize_create_children(children)
 
-        for i in range(0, len(normalized_children), chunk_size):
-            chunk = normalized_children[i: i + chunk_size]
+        def _create_chunk(chunk: List[Block], chunk_index: int) -> List[dict]:
             body_builder = CreateDocumentBlockChildrenRequestBody.builder().children(chunk)
-            if current_index >= 0:
-                body_builder = body_builder.index(current_index)
+            if chunk_index >= 0:
+                body_builder = body_builder.index(chunk_index)
 
             request = (
                 CreateDocumentBlockChildrenRequest.builder()
@@ -204,18 +205,27 @@ class DocxAPI(SubModule):
             )
 
             if not response.success():
+                if response.code == 1770035 and len(chunk) > 1:
+                    mid = max(1, len(chunk) // 2)
+                    created_first = _create_chunk(chunk[:mid], chunk_index)
+                    next_index = chunk_index + len(created_first) if chunk_index >= 0 else -1
+                    created_second = _create_chunk(chunk[mid:], next_index)
+                    return created_first + created_second
                 self._log_error("docx.v1.document_block_children.create", response)
                 raise RuntimeError(f"创建 Block 失败: {response.msg}")
 
             try:
                 data = json.loads(response.raw.content)
-                created = data.get("data", {}).get("children", [])
-                all_created_children.extend(created)
+                return data.get("data", {}).get("children", [])
             except json.JSONDecodeError:
-                pass
+                return []
 
+        for i in range(0, len(normalized_children), chunk_size):
+            chunk = normalized_children[i: i + chunk_size]
+            created = _create_chunk(chunk, current_index)
+            all_created_children.extend(created)
             if current_index >= 0:
-                current_index += len(chunk)
+                current_index += len(created)
 
         return all_created_children
 

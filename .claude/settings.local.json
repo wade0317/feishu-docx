@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Bash(grep -n \"diagram\\\\|mermaid\\\\|flowchart\" /Users/wade/MyDocument/ScriptCode/feishu-docx/README*.md 2>/dev/null | head -20)",
+      "Bash(ls -la /Users/wade/MyDocument/ScriptCode/feishu-docx/*.md 2>/dev/null)",
+      "Bash(python3 -c \"from lark_oapi.api.docx.v1 import Block; import inspect; members = [m for m in dir\\(Block\\) if not m.startswith\\('_'\\)]; print\\('\\\\n'.join\\(sorted\\(members\\)\\)\\)\" 2>/dev/null | grep -i \"diagram\\\\|flow\")",
+      "Bash(find /Users/wade/MyDocument/ScriptCode/feishu-docx -name \"test*\" -o -name \"*test.py\" 2>/dev/null | head -10)",
+      "Bash(find /Users/wade/MyDocument/ScriptCode/feishu-docx/.venv/lib -path \"*/docx/v1/model/block.py\" 2>/dev/null | head -5)",
+      "Bash(.venv/bin/python3 -c \"\nfrom feishu_docx.core.sdk import FeishuSDK\nfrom feishu_docx.utils.config import AppConfig\nfrom feishu_docx.schema.models import BlockType\n\nconfig = AppConfig.load\\(\\)\nsdk = FeishuSDK\\(\\)\ntoken = sdk.auth.get_access_token\\(config.app_id, config.app_secret, auth_mode=config.auth_mode\\)\n\ndoc_id = 'DNlqdE87EooAYVxs983cTlC1n2Q'\nblocks = sdk.docx.get_block_list\\(document_id=doc_id, access_token=token\\)\n\n# 找到 diagram block\nfor b in blocks:\n    if b.block_type == BlockType.DIAGRAM:\n        print\\(f'=== DIAGRAM block ==='\\)\n        print\\(f'block_id: {b.block_id}'\\)\n        print\\(f'diagram_type: {b.diagram.diagram_type if b.diagram else None}'\\)\n        print\\(f'children: {b.children}'\\)\n        print\\(\\)\n        \n        # 查看子 block\n        if b.children:\n            for child_id in b.children:\n                child = next\\(\\(x for x in blocks if x.block_id == child_id\\), None\\)\n                if child:\n                    print\\(f'  --- Child block ---'\\)\n                    print\\(f'  block_id: {child.block_id}'\\)\n                    print\\(f'  block_type: {child.block_type} \\({BlockType\\(child.block_type\\).name}\\)'\\)\n                    print\\(f'  children: {child.children}'\\)\n                    for attr in ['text', 'code', 'page', 'heading1', 'heading2', 'heading3']:\n                        val = getattr\\(child, attr, None\\)\n                        if val and hasattr\\(val, 'elements'\\) and val.elements:\n                            texts = [e.text_run.content if e.text_run else '' for e in val.elements]\n                            combined = ''.join\\(texts\\)\n                            print\\(f'  {attr} content: {combined[:200]}'\\)\n                    print\\(\\)\n\" 2>&1)",
+      "mcp__lark_open_doc_search__openplatform_developer_document_recall",
+      "WebFetch(domain:open.feishu.cn)",
+      "Bash(grep -n \"mermaid\" /Users/wade/MyDocument/ScriptCode/feishu-docx/*.md 2>/dev/null)"
+    ]
+  }
+}

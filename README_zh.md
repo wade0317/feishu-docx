@@ -50,6 +50,9 @@ feishu-docx export "https://my.feishu.cn/wiki/KUIJwaBuGiwaSIkkKJ6cfVY8nSg"
 # 直接从公众号抓取并创建飞书文档
 feishu-docx create --url "https://mp.weixin.qq.com/s/xxxxx"
 
+# Mermaid fenced code block 会自动写入为飞书画板
+feishu-docx create "系统设计" -c $'```mermaid\nflowchart TD\nA --> B\n```'
+
 # 管理应用云空间中的文档
 feishu-docx drive ls --type docx
 
@@ -117,6 +120,29 @@ Supports OpenCode, Claude Code, Codex, Cursor, and more.
 - 抓取微信公众号文章并直接创建飞书文档
 - 创建/追加/更新飞书文档内容
 - 管理应用云空间或个人云空间中的文件和权限
+
+### Mermaid 写回兼容性
+
+Markdown 写入飞书文档时，` ```mermaid ` 代码块只会在飞书白板 API 实际支持时转成画板；如果类型不支持或解析失败，会自动降级为普通代码块，不会中断整篇文档同步。
+
+以下结果基于 2026 年 3 月 19 日对文档 `https://nvj4o5b5sdu.feishu.cn/wiki/RbKnw4BfyiQytrki6I4cKqJVnbg` 的实测：
+
+| Mermaid 类型 | 结果 | 说明 |
+|---|---|---|
+| `graph` / `flowchart` | ✅ 成功写入为画板 | 已实测 `graph LR`、`graph TD`、`graph TB` |
+| `sequenceDiagram` | ✅ 成功写入为画板 | |
+| `classDiagram` | ✅ 成功写入为画板 | |
+| `stateDiagram-v2` | ✅ 成功写入为画板 | |
+| `gantt` | ✅ 成功写入为画板 | |
+| `pie` | ✅ 成功写入为画板 | |
+| `erDiagram` | ✅ 成功写入为画板 | |
+| `mindmap` | ✅ 成功写入为画板 | |
+| `timeline` | ✅ 成功写入为画板 | |
+| `journey` | ❌ 画板写入失败 | 飞书 API 明确返回 `type: journey not supported` |
+| `gitgraph` | ❌ 画板写入失败 | 已自动降级为普通代码块 |
+| `quadrantChart` | ❌ 画板写入失败 | 飞书 API 返回 Mermaid 词法解析错误 |
+
+未列出的 Mermaid 类型，当前仓库还没有实测结果。当前实现优先保证整篇文档能同步成功，因此不支持的 Mermaid 会自动回退为代码块。
 
 ### CLI 命令行
 
@@ -191,6 +217,7 @@ print(f"导出 {result['exported']} 个文档到 {result['space_dir']}")
 "sheets:spreadsheet:readonly"  # 查看电子表格
 "bitable:app:readonly"  # 查看多维表格
 "board:whiteboard:node:read"  # 查看白板
+"board:whiteboard:node:create"  # 创建白板节点（Mermaid 导入）
 "contact:contact.base:readonly"  # 获取用户基本信息（@用户名称）
 "offline_access"  # 离线访问（获取 refresh_token）
 ```

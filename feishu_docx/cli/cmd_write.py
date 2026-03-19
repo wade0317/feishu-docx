@@ -6,6 +6,7 @@
 # @Author ：leemysw
 # 2026/02/01 19:15   Create - 从 main.py 拆分
 # 2026/03/02 10:39   Add wechat import into create command
+# 2026/03/19 19:55   Add overwrite mode for write command
 # =====================================================
 """
 [INPUT]: 依赖 typer, feishu_docx.core.writer, feishu_docx.core.exporter
@@ -196,6 +197,7 @@ def write(
         app_secret: Optional[str] = typer.Option(None, "--app-secret", help="飞书应用 App Secret"),
         auth_mode: Optional[str] = typer.Option(None, "--auth-mode", help="认证模式: tenant / oauth"),
         lark: bool = typer.Option(False, "--lark", help="使用 Lark (海外版)"),
+        overwrite: bool = typer.Option(False, "--overwrite", help="先清空文档内容，再写入 Markdown"),
 ):
     """
     [green]▶[/] 向飞书文档追加 Markdown 内容
@@ -207,6 +209,9 @@ def write(
 
         # 从文件追加内容\\\\n
         feishu-docx write "https://xxx.feishu.cn/docx/xxx" -f ./content.md
+
+        # 用本地 Markdown 覆盖远端文档\\\\n
+        feishu-docx write "https://xxx.feishu.cn/wiki/xxx" -f ./doc.md --overwrite
     """
     if not content and not file:
         console.print("[red]❌ 必须提供 -c/--content 或 -f/--file[/red]")
@@ -235,17 +240,32 @@ def write(
             console.print(f"[red]❌ 只支持 docx / wiki 类型文档，当前类型: {doc_info.node_type}[/red]")
             raise typer.Exit(1)
 
+        document_id = doc_info.node_token
+        if doc_info.node_type == "wiki":
+            node = exporter.sdk.wiki.get_node_metadata(doc_info.node_token, access_token)
+            if not node or not getattr(node, "obj_token", None):
+                console.print("[red]❌ 无法解析 wiki 节点对应的文档对象[/red]")
+                raise typer.Exit(1)
+            if getattr(node, "obj_type", None) not in ("docx", "doc"):
+                console.print(
+                    f"[red]❌ wiki 节点对应对象不支持写入，当前类型: {getattr(node, 'obj_type', 'unknown')}[/red]"
+                )
+                raise typer.Exit(1)
+            document_id = node.obj_token
+
         writer = FeishuWriter(sdk=exporter.sdk)
 
         # 写入内容
         blocks = writer.write_content(
-            document_id=doc_info.node_token,
+            document_id=document_id,
             content=content,
             file_path=file,
             user_access_token=access_token,
+            append=not overwrite,
         )
 
-        console.print(Panel(f"✅ 写入成功! 添加了 {len(blocks)} 个 Block", border_style="green"))
+        action = "覆盖写入" if overwrite else "写入"
+        console.print(Panel(f"✅ {action}成功! 添加了 {len(blocks)} 个 Block", border_style="green"))
 
     except Exception as e:
         console.print(f"[red]❌ 写入失败: {e}[/red]")

@@ -10,6 +10,7 @@
 # 2026/01/28 12:30   Fix \\text{..._...} subscript rendering
 # 2026/01/28 12:40   Fix mistune table parsing and cell content
 # 2026/03/11 11:20   Fix front matter and nested list conversion
+# 2026/03/19 19:35   Add Mermaid code block to whiteboard conversion
 # =====================================================
 """
 Markdown → 飞书 Block 转换器
@@ -58,6 +59,7 @@ class MarkdownToBlocks:
     BLOCK_TYPE_IMAGE = 27
     BLOCK_TYPE_TABLE = 31
     BLOCK_TYPE_TABLE_CELL = 32
+    BLOCK_TYPE_BOARD = 43
 
     # 代码语言映射
     LANGUAGE_MAP = CODE_STYLE_MAP_REVERSE
@@ -65,6 +67,19 @@ class MarkdownToBlocks:
         r"^(?:\ufeff)?---\s*\n.*?\n---\s*(?:\n|$)",
         re.DOTALL,
     )
+    SUPPORTED_MERMAID_TYPES = {
+        "flowchart",
+        "graph",
+        "sequenceDiagram",
+        "pie",
+        "mindmap",
+        "timeline",
+        "gantt",
+        "classDiagram",
+        "erDiagram",
+        "stateDiagram",
+        "stateDiagram-v2",
+    }
 
     def __init__(self):
         """初始化转换器"""
@@ -315,7 +330,36 @@ class MarkdownToBlocks:
     def _make_code_block(self, token: Dict[str, Any]) -> Dict[str, Any]:
         """创建代码块 Block"""
         raw_text = token.get("raw", "")
-        lang = token.get("attrs", {}).get("info", "").lower()
+        info = (token.get("attrs", {}).get("info", "") or "").strip()
+        lang = info.split(maxsplit=1)[0].lower() if info else ""
+
+        if lang == "mermaid":
+            diagram_type = self._detect_mermaid_diagram_type(raw_text)
+            if diagram_type not in self.SUPPORTED_MERMAID_TYPES:
+                return self._make_plain_code_block(raw_text, lang)
+
+            return {
+                "block_type": self.BLOCK_TYPE_BOARD,
+                "board": {},
+                "_feishu_docx_mermaid": {
+                    "syntax_type": 2,
+                    "style_type": 1,
+                    "diagram_type": 0,
+                    "code": raw_text,
+                },
+            }
+
+        return self._make_plain_code_block(raw_text, lang)
+
+    @staticmethod
+    def _detect_mermaid_diagram_type(raw_text: str) -> str:
+        for line in raw_text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("%%"):
+                return stripped.split(maxsplit=1)[0]
+        return ""
+
+    def _make_plain_code_block(self, raw_text: str, lang: str) -> Dict[str, Any]:
         lang_code = self.LANGUAGE_MAP.get(lang, 1)  # 1 = PlainText
 
         return {
