@@ -148,6 +148,15 @@ Verified against the document `https://nvj4o5b5sdu.feishu.cn/wiki/RbKnw4BfyiQytr
 
 Types not listed above were not verified in this repository yet. Current implementation prefers successful document sync over strict whiteboard conversion, so unsupported Mermaid blocks fall back to code blocks.
 
+### Level-One Heading TurnInto Workflow
+
+Feishu server-side docx APIs do not expose reliable block-type conversion between `ordered` and `heading1`. To support client-side conversion later, `feishu-docx` writes Markdown level-one headings as ordered blocks tagged with the prefix `__DOC_H1__ ` in the first text run.
+
+This marker lets a Docs Add-on convert only those synced ordered blocks into `heading1`, without affecting normal ordered lists. A minimal client-side example is included at:
+
+- [docs/addons/heading-turninto-addon/README.md](/Users/wade/MyDocument/ScriptCode/feishu-docx/docs/addons/heading-turninto-addon/README.md)
+- [docs/addons/heading-turninto-addon/main.ts](/Users/wade/MyDocument/ScriptCode/feishu-docx/docs/addons/heading-turninto-addon/main.ts)
+
 ### CLI
 
 ```bash

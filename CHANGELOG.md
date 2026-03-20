@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - 写入 Markdown 时支持将 ` ```mermaid ` fenced code block 自动创建为飞书画板，并通过白板 Mermaid/PlantUML API 导入源码
+- 写入 Markdown 一级标题时，使用带 `__DOC_H1__ ` 标记的有序列表块，便于后续 Docs Add-on 仅转换目标块为 `heading1`
+- 新增最小 Docs Add-on 示例 `docs/addons/heading-turninto-addon/`，用于将带标记的有序列表块转换为一级标题并移除标记
+
+### Fixed
+- 修复导出 Markdown 时 `ordered.style.sequence = auto` 的首个列表项错误渲染为 `2.` 的问题
 
 ## [0.2.2] - 2026-03-11
 

@@ -90,8 +90,8 @@ class DocumentParser:
         self.blocks_map: Dict[str, Block] = {}
         self.root_block: Optional[Block] = None
 
-        # order 序列号
-        self.last_order_seq = 1
+        # order 序列号，初始为 0 以便首个 auto 列表项从 1 开始
+        self.last_order_seq = 0
 
         # 预处理
         self._preprocess()

@@ -83,6 +83,7 @@ class MarkdownToBlocks:
         "stateDiagram-v2",
     }
     AUTO_NUMBERED_HEADING_MAX_LEVEL = 4
+    LEVEL_ONE_TURNINTO_MARKER = "__DOC_H1__ "
 
     def __init__(self):
         """初始化转换器"""
@@ -228,12 +229,22 @@ class MarkdownToBlocks:
         return None
 
     def _make_heading(self, token: Dict[str, Any]) -> Dict[str, Any]:
-        """创建标题 Block"""
+        """创建标题 Block。一级标题使用有序列表块以兼容飞书编号能力。"""
         level = token.get("attrs", {}).get("level", 1)
         level = min(max(level, 1), 6)  # 限制 1-6
-        block_type = self.BLOCK_TYPE_HEADING1 + level - 1
 
         elements = self._extract_text_elements(token.get("children", []))
+
+        if level == 1:
+            return {
+                "block_type": self.BLOCK_TYPE_ORDERED,
+                "ordered": {
+                    "elements": self._prepend_level_one_marker(elements),
+                    "style": {"sequence": "auto"},
+                },
+            }
+
+        block_type = self.BLOCK_TYPE_HEADING1 + level - 1
 
         heading_key = f"heading{level}"
         heading_payload: Dict[str, Any] = {"elements": elements}
@@ -690,6 +701,29 @@ class MarkdownToBlocks:
             if "text_run" in element:
                 parts.append(element["text_run"].get("content", ""))
         return "".join(parts).strip()
+
+    def _prepend_level_one_marker(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not elements:
+            return [{
+                "text_run": {
+                    "content": self.LEVEL_ONE_TURNINTO_MARKER,
+                    "text_element_style": {},
+                }
+            }]
+
+        first = elements[0]
+        if "text_run" in first:
+            text_run = first["text_run"]
+            text_run["content"] = f"{self.LEVEL_ONE_TURNINTO_MARKER}{text_run.get('content', '')}"
+            text_run.setdefault("text_element_style", {})
+            return elements
+
+        return [{
+            "text_run": {
+                "content": self.LEVEL_ONE_TURNINTO_MARKER,
+                "text_element_style": {},
+            }
+        }, *elements]
 
     def _resolve_mention_doc(self, url: str) -> Optional[Dict[str, Any]]:
         if not self.link_resolver:
