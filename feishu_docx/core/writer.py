@@ -12,6 +12,7 @@
 # 2026/01/28 13:25   Fetch table cell blocks on demand
 # 2026/03/11 11:20   Fix nested list recursion and table chunk creation
 # 2026/03/19 19:35   Add Mermaid-to-whiteboard write pipeline
+# 2026/03/20 00:35   Add PlantUML/UML write pipeline
 # =====================================================
 """
 飞书文档写入器
@@ -23,6 +24,7 @@
 """
 
 import copy
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -72,6 +74,28 @@ class FeishuWriter:
             return block.get("children") or []
         return getattr(block, "children", []) or []
 
+    @staticmethod
+    def _extract_markdown_title(raw_md_content: str) -> Optional[str]:
+        for line in raw_md_content.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("# "):
+                title = stripped[2:].strip()
+                return title or None
+        return None
+
+    def _resolve_document_title(
+            self,
+            raw_md_content: str,
+            file_path: Optional[Union[str, Path]] = None,
+    ) -> Optional[str]:
+        if file_path:
+            stem = Path(file_path).stem.strip()
+            if stem:
+                return stem
+        return self._extract_markdown_title(raw_md_content)
+
     def _ordered_blocks(self, document_id: str, user_access_token: str) -> List[Any]:
         blocks = self.sdk.docx.get_block_list(document_id, user_access_token)
         if not blocks:
@@ -103,6 +127,44 @@ class FeishuWriter:
 
         dfs(root_id)
         return ordered
+
+    def _resolve_link_for_mention_doc(self, url: str, user_access_token: str) -> Optional[Dict[str, Any]]:
+        patterns = {
+            "doc": r"(?:feishu|larksuite)\.cn/doc/([a-zA-Z0-9]+)|larkoffice\.com/doc/([a-zA-Z0-9]+)",
+            "docx": r"(?:feishu|larksuite)\.cn/docx/([a-zA-Z0-9]+)|larkoffice\.com/docx/([a-zA-Z0-9]+)",
+            "wiki": r"(?:feishu|larksuite)\.cn/wiki/([a-zA-Z0-9]+)|larkoffice\.com/wiki/([a-zA-Z0-9]+)",
+        }
+
+        parsed_type = None
+        parsed_token = None
+        for node_type, pattern in patterns.items():
+            match = re.search(pattern, url)
+            if match:
+                parsed_type = node_type
+                parsed_token = match.group(1) or match.group(2)
+                break
+
+        if not parsed_type or not parsed_token:
+            return None
+
+        if parsed_type == "wiki":
+            node = self.sdk.wiki.get_node_metadata(parsed_token, user_access_token)
+            if not node or getattr(node, "obj_type", None) not in ("docx", "doc"):
+                return None
+            parsed_type = getattr(node, "obj_type")
+            parsed_token = getattr(node, "obj_token", None)
+            if not parsed_token:
+                return None
+
+        if parsed_type not in {"docx", "doc"}:
+            return None
+
+        return {
+            "obj_type": parsed_type,
+            "token": parsed_token,
+            "url": url,
+            "fallback_type": 0,
+        }
 
     def _prepare_table_blocks(
             self, blocks: List[Dict[str, Any]]
@@ -243,22 +305,26 @@ class FeishuWriter:
                 )
             time.sleep(0.35)
 
-    def _replace_mermaid_board_with_code_block(
+    def _replace_board_with_code_block(
             self,
             document_id: str,
             parent_block_id: str,
             created_block: Dict[str, Any],
-            mermaid_plan: Dict[str, Any],
+            board_source_plan: Dict[str, Any],
             user_access_token: str,
             insert_index: int,
     ) -> None:
-        block_id = self._block_id(created_block)
-        if block_id:
-            self.sdk.docx.delete_block(document_id, block_id, user_access_token)
+        self.sdk.docx.delete_blocks(
+            document_id=document_id,
+            block_id=parent_block_id,
+            start_index=insert_index,
+            end_index=insert_index + 1,
+            access_token=user_access_token,
+        )
 
         fallback_block = self.converter._make_plain_code_block(  # noqa: SLF001
-            mermaid_plan.get("code", ""),
-            "mermaid",
+            board_source_plan.get("code", ""),
+            board_source_plan.get("language", ""),
         )
         self.sdk.docx.create_blocks(
             document_id=document_id,
@@ -278,7 +344,7 @@ class FeishuWriter:
         """递归创建块，避免将嵌套 children 直接放入单次创建请求。"""
         request_blocks: List[Dict[str, Any]] = []
         child_plans: List[List[Dict[str, Any]]] = []
-        mermaid_plans: List[Optional[Dict[str, Any]]] = []
+        board_source_plans: List[Optional[Dict[str, Any]]] = []
 
         for block in blocks:
             block_copy = dict(block)
@@ -286,10 +352,10 @@ class FeishuWriter:
                 child for child in (block_copy.pop("children", []) or [])
                 if isinstance(child, dict)
             ]
-            mermaid_plan = block_copy.pop("_feishu_docx_mermaid", None)
+            board_source_plan = block_copy.pop("_feishu_docx_board_source", None)
             request_blocks.append(block_copy)
             child_plans.append(nested_children)
-            mermaid_plans.append(mermaid_plan)
+            board_source_plans.append(board_source_plan)
 
         created_blocks = self.sdk.docx.create_blocks(
             document_id=document_id,
@@ -298,33 +364,38 @@ class FeishuWriter:
             access_token=user_access_token,
         )
 
-        for sibling_index, (created_block, nested_children, mermaid_plan) in enumerate(
-                zip(created_blocks, child_plans, mermaid_plans)
+        for sibling_index, (created_block, nested_children, board_source_plan) in enumerate(
+                zip(created_blocks, child_plans, board_source_plans)
         ):
-            if mermaid_plan:
+            if board_source_plan:
                 whiteboard_id = self._whiteboard_token(created_block)
                 if not whiteboard_id:
-                    raise RuntimeError("Mermaid 画板创建成功，但未返回 whiteboard token")
+                    raise RuntimeError("文本图表画板创建成功，但未返回 whiteboard token")
                 try:
                     self.sdk.media.create_whiteboard_plantuml_node(
                         whiteboard_id=whiteboard_id,
-                        source_code=mermaid_plan.get("code", ""),
+                        source_code=board_source_plan.get("code", ""),
                         access_token=user_access_token,
-                        syntax_type=mermaid_plan.get("syntax_type", 2),
-                        style_type=mermaid_plan.get("style_type", 1),
-                        diagram_type=mermaid_plan.get("diagram_type", 0),
+                        syntax_type=board_source_plan.get("syntax_type", 2),
+                        style_type=board_source_plan.get("style_type", 1),
+                        diagram_type=board_source_plan.get("diagram_type", 0),
                     )
                 except RuntimeError as e:
                     error_text = str(e)
-                    if "parse Mermaid failed" in error_text or "Lexical error" in error_text:
+                    if (
+                            "parse Mermaid failed" in error_text
+                            or "Lexical error" in error_text
+                            or "Syntax Error" in error_text
+                            or "parse error" in error_text
+                    ):
                         console.print(
-                            "[yellow]![/yellow] Mermaid 画板解析失败，已回退为普通代码块"
+                            "[yellow]![/yellow] 图表画板解析失败，已回退为普通代码块"
                         )
-                        self._replace_mermaid_board_with_code_block(
+                        self._replace_board_with_code_block(
                             document_id=document_id,
                             parent_block_id=parent_block_id,
                             created_block=created_block,
-                            mermaid_plan=mermaid_plan,
+                            board_source_plan=board_source_plan,
                             user_access_token=user_access_token,
                             insert_index=sibling_index,
                         )
@@ -419,7 +490,15 @@ class FeishuWriter:
         else:
             raise ValueError("必须提供 content 或 file_path")
 
+        document_title = self._resolve_document_title(raw_md_content, file_path)
+        if document_title:
+            try:
+                self.sdk.docx.update_document_title(document_id, document_title, user_access_token)
+            except Exception as title_err:
+                console.print(f"[yellow]![/yellow] 更新文档标题失败，继续写入内容: {title_err}")
+
         md_content = self.converter.preprocess_markdown(raw_md_content)
+        self.converter.link_resolver = lambda url: self._resolve_link_for_mention_doc(url, user_access_token)
 
         # 转换为 Block
         blocks: List[Dict[str, Any]] = []
@@ -433,11 +512,12 @@ class FeishuWriter:
                 isinstance(b, dict) and b.get("block_type") == self.converter.BLOCK_TYPE_TABLE
                 for b in local_blocks
             )
-            has_mermaid = any(
-                isinstance(b, dict) and b.get("_feishu_docx_mermaid")
+            has_board_source = any(
+                isinstance(b, dict) and b.get("_feishu_docx_board_source")
                 for b in local_blocks
             )
-            if local_images or has_nested_lists or has_tables or has_mermaid:
+            has_mention_doc = self._blocks_have_mention_doc(local_blocks)
+            if local_images or has_nested_lists or has_tables or has_board_source or has_mention_doc:
                 blocks, image_paths = local_blocks, local_images
                 use_local_blocks = True
             else:
@@ -563,6 +643,20 @@ class FeishuWriter:
 
         console.print("[green]v[/green] 文档同步完成！")
         return created_blocks
+
+    def _blocks_have_mention_doc(self, blocks: List[Dict[str, Any]]) -> bool:
+        def has_mention(elements: List[Dict[str, Any]]) -> bool:
+            return any(isinstance(element, dict) and element.get("mention_doc") for element in elements)
+
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            for value in block.values():
+                if isinstance(value, dict) and has_mention(value.get("elements") or []):
+                    return True
+            if self._blocks_have_mention_doc(block.get("children") or []):
+                return True
+        return False
 
     def update_block(
             self,

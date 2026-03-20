@@ -166,6 +166,49 @@ class DocxAPI(SubModule):
             "title": doc.title,
         }
 
+    def update_document_title(self, document_id: str, title: str, access_token: str) -> dict:
+        """更新文档标题（通过更新根 Page Block 文本实现）"""
+        from lark_oapi.api.docx.v1 import (
+            PatchDocumentBlockRequest,
+            PatchDocumentBlockResponse,
+            TextElement,
+            TextRun,
+            UpdateBlockRequest,
+            UpdateTextElementsRequest,
+        )
+
+        text_element = (
+            TextElement.builder()
+            .text_run(TextRun.builder().content(title).build())
+            .build()
+        )
+        update_request = (
+            UpdateBlockRequest.builder()
+            .update_text_elements(
+                UpdateTextElementsRequest.builder()
+                .elements([text_element])
+                .build()
+            )
+            .build()
+        )
+        request = (
+            PatchDocumentBlockRequest.builder()
+            .document_id(document_id)
+            .block_id(document_id)
+            .document_revision_id(-1)
+            .request_body(update_request)
+            .build()
+        )
+        option = self._build_option(access_token)
+        response: PatchDocumentBlockResponse = self.client.docx.v1.document_block.patch(request, option)
+
+        if not response.success():
+            self._log_error("docx.v1.document_block.patch.update_title", response)
+            raise RuntimeError(f"更新文档标题失败: {response.msg}")
+
+        data = json.loads(response.raw.content)
+        return data.get("data", {}).get("block", {})
+
     def create_blocks(
             self,
             document_id: str,

@@ -11,6 +11,8 @@
 # 2026/01/28 12:40   Fix mistune table parsing and cell content
 # 2026/03/11 11:20   Fix front matter and nested list conversion
 # 2026/03/19 19:35   Add Mermaid code block to whiteboard conversion
+# 2026/03/20 00:35   Add PlantUML / UML code block to whiteboard conversion
+# 2026/03/20 01:10   Add Feishu doc link to mention_doc conversion
 # =====================================================
 """
 Markdown → 飞书 Block 转换器
@@ -22,7 +24,7 @@ Markdown → 飞书 Block 转换器
 """
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import mistune
 from mistune.plugins.math import math as math_plugin
@@ -80,6 +82,7 @@ class MarkdownToBlocks:
         "stateDiagram",
         "stateDiagram-v2",
     }
+    AUTO_NUMBERED_HEADING_MAX_LEVEL = 4
 
     def __init__(self):
         """初始化转换器"""
@@ -88,6 +91,7 @@ class MarkdownToBlocks:
             plugins=[table_plugin, math_plugin],
         )
         self.image_paths: List[str] = []
+        self.link_resolver: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
 
     def convert(self, markdown_text: str) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
@@ -232,37 +236,42 @@ class MarkdownToBlocks:
         elements = self._extract_text_elements(token.get("children", []))
 
         heading_key = f"heading{level}"
+        heading_payload: Dict[str, Any] = {"elements": elements}
+        if level <= self.AUTO_NUMBERED_HEADING_MAX_LEVEL:
+            heading_payload["style"] = {"sequence": "auto"}
         return {
             "block_type": block_type,
-            heading_key: {"elements": elements},
+            heading_key: heading_payload,
         }
 
     def _make_paragraph(self, token: Dict[str, Any]) -> List[Dict[str, Any]]:
         """创建段落 Block (支持中途插入图片并分割)"""
         children = token.get("children", [])
         blocks = []
-        current_elements = []
+        inline_buffer = []
+
+        def flush_inline() -> None:
+            nonlocal inline_buffer
+            if not inline_buffer:
+                return
+            elements = self._extract_text_elements(inline_buffer)
+            blocks.append({
+                "block_type": self.BLOCK_TYPE_TEXT,
+                "text": {"elements": elements},
+            })
+            inline_buffer = []
 
         for child in children:
             if child.get("type") == "image":
-                if current_elements:
-                    blocks.append({
-                        "block_type": self.BLOCK_TYPE_TEXT,
-                        "text": {"elements": current_elements},
-                    })
-                    current_elements = []
+                flush_inline()
 
                 img_block = self._make_image(child)
                 if img_block:
                     blocks.append(img_block)
             else:
-                current_elements.extend(self._extract_text_elements([child]))
+                inline_buffer.append(child)
 
-        if current_elements:
-            blocks.append({
-                "block_type": self.BLOCK_TYPE_TEXT,
-                "text": {"elements": current_elements},
-            })
+        flush_inline()
 
         return blocks
 
@@ -341,8 +350,22 @@ class MarkdownToBlocks:
             return {
                 "block_type": self.BLOCK_TYPE_BOARD,
                 "board": {},
-                "_feishu_docx_mermaid": {
+                "_feishu_docx_board_source": {
+                    "language": lang,
                     "syntax_type": 2,
+                    "style_type": 1,
+                    "diagram_type": 0,
+                    "code": raw_text,
+                },
+            }
+
+        if lang in {"plantuml", "uml", "puml"}:
+            return {
+                "block_type": self.BLOCK_TYPE_BOARD,
+                "board": {},
+                "_feishu_docx_board_source": {
+                    "language": lang,
+                    "syntax_type": 1,
                     "style_type": 1,
                     "diagram_type": 0,
                     "code": raw_text,
@@ -539,7 +562,9 @@ class MarkdownToBlocks:
             style = {}
         style = {k: v for k, v in style.items() if v}
 
-        for child in children:
+        idx = 0
+        while idx < len(children):
+            child = children[idx]
             child_type = child.get("type")
 
             if child_type in ["text", "codespan"]:
@@ -583,18 +608,70 @@ class MarkdownToBlocks:
                 elements.extend(self._extract_text_elements(child.get("children", []), new_style))
 
             elif child_type == "link":
-                new_style = style.copy()
                 url = child.get("attrs", {}).get("url", "")
-                new_style["link"] = {"url": url}
-                if not child.get("children"):
+                marker_mode, trailing_text = self._consume_link_marker(children, idx + 1)
+
+                if url.startswith("#"):
+                    elements.extend(self._extract_text_elements(child.get("children", []), style))
+                    if trailing_text:
+                        elements.append({
+                            "text_run": {
+                                "content": trailing_text,
+                                "text_element_style": style.copy(),
+                            }
+                        })
+                    if marker_mode:
+                        idx += 1
+                    idx += 1
+                    continue
+
+                if not self._is_remote_url(url):
+                    elements.extend(self._extract_text_elements(child.get("children", []), style))
+                    if trailing_text:
+                        elements.append({
+                            "text_run": {
+                                "content": trailing_text,
+                                "text_element_style": style.copy(),
+                            }
+                        })
+                    if marker_mode:
+                        idx += 1
+                    idx += 1
+                    continue
+
+                mention_doc = None if marker_mode == "link" else self._resolve_mention_doc(url)
+                if mention_doc:
+                    title_elements = self._extract_text_elements(child.get("children", []), style)
+                    title = self._plain_text_from_elements(title_elements)
                     elements.append({
-                        "text_run": {
-                            "content": url,
-                            "text_element_style": new_style,
+                        "mention_doc": {
+                            **mention_doc,
+                            "title": title or mention_doc.get("title"),
+                            "text_element_style": style.copy() or None,
                         }
                     })
                 else:
-                    elements.extend(self._extract_text_elements(child.get("children", []), new_style))
+                    new_style = style.copy()
+                    new_style["link"] = {"url": url}
+                    if not child.get("children"):
+                        elements.append({
+                            "text_run": {
+                                "content": url,
+                                "text_element_style": new_style,
+                            }
+                        })
+                    else:
+                        elements.extend(self._extract_text_elements(child.get("children", []), new_style))
+
+                if trailing_text:
+                    elements.append({
+                        "text_run": {
+                            "content": trailing_text,
+                            "text_element_style": style.copy(),
+                        }
+                    })
+                if marker_mode:
+                    idx += 1
 
             elif child_type in ["math", "inline_math"]:
                 math_content = child.get("attrs", {}).get("content", "") or child.get("raw", "").strip("$")
@@ -602,4 +679,37 @@ class MarkdownToBlocks:
                 if math_content:
                     elements.append({"equation": {"content": math_content}})
 
+            idx += 1
+
         return elements
+
+    @staticmethod
+    def _plain_text_from_elements(elements: List[Dict[str, Any]]) -> str:
+        parts = []
+        for element in elements:
+            if "text_run" in element:
+                parts.append(element["text_run"].get("content", ""))
+        return "".join(parts).strip()
+
+    def _resolve_mention_doc(self, url: str) -> Optional[Dict[str, Any]]:
+        if not self.link_resolver:
+            return None
+        try:
+            return self.link_resolver(url)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _consume_link_marker(children: List[Dict[str, Any]], next_index: int) -> tuple[Optional[str], str]:
+        if next_index >= len(children):
+            return None, ""
+        next_child = children[next_index]
+        if next_child.get("type") != "text":
+            return None, ""
+
+        text = next_child.get("text") or next_child.get("raw", "")
+        if text.startswith("{:link}"):
+            return "link", text[len("{:link}"):]
+        if text.startswith("{:mention-doc}"):
+            return "mention-doc", text[len("{:mention-doc}"):]
+        return None, ""
