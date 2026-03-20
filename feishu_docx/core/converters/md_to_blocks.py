@@ -83,6 +83,7 @@ class MarkdownToBlocks:
         "stateDiagram-v2",
     }
     AUTO_NUMBERED_HEADING_MAX_LEVEL = 4
+    TEXT_INDENT_ONE_LEVEL = "OneLevelIndent"
 
     def __init__(self):
         """初始化转换器"""
@@ -92,6 +93,7 @@ class MarkdownToBlocks:
         )
         self.image_paths: List[str] = []
         self.link_resolver: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
+        self._current_paragraph_indentation: Optional[str] = None
 
     def convert(self, markdown_text: str) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
@@ -104,10 +106,12 @@ class MarkdownToBlocks:
             (Blocks 列表, 图片路径列表)
         """
         self.image_paths = []
+        self._current_paragraph_indentation = None
         tokens = self._parse_tokens(markdown_text)
 
         blocks = []
         for token in tokens:
+            self._update_indentation_context(token)
             block = self._convert_token(token)
             if not block:
                 continue
@@ -140,6 +144,17 @@ class MarkdownToBlocks:
                 blocks.append(b)
 
         return blocks, self.image_paths
+
+    def _update_indentation_context(self, token: Dict[str, Any]) -> None:
+        if token.get("type") != "heading":
+            return
+
+        level = token.get("attrs", {}).get("level", 1)
+        level = min(max(level, 1), 6)
+        if level == 1:
+            self._current_paragraph_indentation = None
+        elif level == 2:
+            self._current_paragraph_indentation = self.TEXT_INDENT_ONE_LEVEL
 
     def preprocess_markdown(self, markdown_text: str) -> str:
         """预处理 Markdown，移除 front matter。"""
@@ -232,7 +247,6 @@ class MarkdownToBlocks:
         level = token.get("attrs", {}).get("level", 1)
         level = min(max(level, 1), 6)  # 限制 1-6
         block_type = self.BLOCK_TYPE_HEADING1 + level - 1
-
         elements = self._extract_text_elements(token.get("children", []))
 
         heading_key = f"heading{level}"
@@ -255,10 +269,13 @@ class MarkdownToBlocks:
             if not inline_buffer:
                 return
             elements = self._extract_text_elements(inline_buffer)
-            blocks.append({
+            text_block = {
                 "block_type": self.BLOCK_TYPE_TEXT,
                 "text": {"elements": elements},
-            })
+            }
+            if self._current_paragraph_indentation:
+                text_block["text"]["style"] = {"indentation_level": self._current_paragraph_indentation}
+            blocks.append(text_block)
             inline_buffer = []
 
         for child in children:
