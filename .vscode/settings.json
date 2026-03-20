@@ -1,0 +1,7 @@
+{
+  "plantuml.render": "PlantUMLServer",
+  "plantuml.server": "https://www.plantuml.com/plantuml",
+  "plantuml.exportOutDir": "out",
+  "plantuml.diagramsRoot": ".",
+  "markdown-preview-enhanced.codeBlockTheme": "github.css"
+}
